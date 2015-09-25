@@ -1,64 +1,115 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+import copy
+import hashlib
 import os
 import random
+import sys
 import tempfile
 import unittest
 
-from rabin import rabin
+from rabin import chunksizes_from_filename, chunksizes_from_fd, chunksizes_from_str
 
 
 class TestFingerprint(unittest.TestCase):
 
-    def setUp(self):
-        self.filenames = []
+    @classmethod
+    def setUpClass(cls):
+        random.seed(0)
+        cls.filenames = []
 
-    def tearDown(self):
+        if sys.version > '3':
+            byte = [chr(i) for i in range(256)]
+        else:
+            byte = [unichr(i) for i in range(256)]
+
+        # create two files: both are identical except 1 KiB in the middle
+        data1 = ''.join(cls._choice(byte) for _ in range(512 * 1024))
+        data2 = ''.join(cls._choice(byte) for _ in range(1 * 1024))
+        data3 = ''.join(cls._choice(byte) for _ in range(512 * 1024))
+
+        cls.tmpf = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+        data = data1 + data3
+        data = data.encode('utf-8')
+        cls.tmpf.write(data)
+        cls.filenames.append(cls.tmpf.name)
+        cls.tmpf.close()
+
+        # Ensure that sample data is always the same
+        m1 = hashlib.md5(data)
+        assert 'c91de0700e243bd2aedefddb0a5b1845' == m1.hexdigest()
+        cls.data = data
+
+        cls.tmpf2 = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+        data = data1 + data2 + data3
+        data = data.encode('utf-8')
+        cls.tmpf2.write(data)
+        cls.filenames.append(cls.tmpf2.name)
+        cls.tmpf2.close()
+
+        # Ensure that sample data is always the same
+        m2 = hashlib.md5(data)
+        assert 'c9601df3a8afc1bb5ee61dcbc7ebfc42'== m2.hexdigest()
+
+        cls.data2 = data
+        cls.reference = [55284, 225345, 34119, 39188, 120699, 97026, 120605,
+                          72303, 35120, 43389, 63216, 46086, 112801, 98696,
+                          45160, 82568, 95650, 35648, 78397, 71123]
+
+        cls.reference2 = copy.copy(cls.reference)
+        cls.reference2[6] = 120605
+        cls.reference2[7] = 72303
+        cls.reference2[8] = 36679
+
+    @classmethod
+    def tearDownClass(self):
         for filename in self.filenames:
             try:
                 os.remove(filename)
             except:
                 pass
 
-    def test_fingerprint(self):
-        # make the test reproducable
-        random.seed(0)
-        byte = [chr(i) for i in range(256)]
+    @classmethod
+    def _choice(cls, seq):
+        """Choose a random element from a non-empty sequence.
 
-        # create two files: both are identical except 1 KiB in the middle
-        data1 = ''.join(random.choice(byte) for _ in range(512 * 1024))
-        data2 = ''.join(random.choice(byte) for _ in range(1 * 1024))
-        data3 = ''.join(random.choice(byte) for _ in range(512 * 1024))
+        Behaviour of random.choice changed in Python 3.2:
+        https://hg.python.org/cpython/rev/c2f8418a0e14/
 
-        tmpf = tempfile.NamedTemporaryFile(delete=False)
-        tmpf.write(data1 + data3)
-        self.filenames.append(tmpf.name)
-        tmpf.close()
+        This method is used in Python2 and thus returns the
+        same result in Python3.
+        """
+        return seq[int(random.random() * len(seq))]
 
-        tmpf2 = tempfile.NamedTemporaryFile(delete=False)
-        tmpf2.write(data1 + data2 + data3)
-        self.filenames.append(tmpf2.name)
-        tmpf2.close()
+    def test_fingerprint_from_filename(self):
+        chunks = chunksizes_from_filename(self.tmpf.name)
+        self.assertEqual(self.reference, chunks)
 
-        old_chunks = rabin(tmpf.name)
-        reference = [97374, 78240, 80059, 35852, 61484, 89381,
-                     139592, 73169, 36567, 34204, 130637, 192017]
-        self.assertEqual(reference, old_chunks)
+        # only a few chunks differ
+        chunks = chunksizes_from_filename(self.tmpf2.name)
+        self.assertEqual(self.reference2, chunks)
 
-        # only one chunk differs
-        new_chunks = rabin(tmpf2.name)
-        reference[6] = 140616
-        reference[7] = 73169
-        self.assertEqual(reference, new_chunks)
+    def test_fingerprint_from_fd(self):
+        with open(self.tmpf.name) as fd:
+            old_chunks = chunksizes_from_fd(fd.fileno())
+        self.assertEqual(self.reference, old_chunks)
 
     def test_empty_file(self):
         f = tempfile.NamedTemporaryFile(delete=False)
         self.filenames.append(f.name)
-        empty_chunks = rabin(f.name)
-        self.assertEqual([], empty_chunks)
+        empty_chunks = chunksizes_from_filename(f.name)
+        self.assertEqual([0], empty_chunks)
 
     def test_missing_file(self):
-        self.assertRaises(IOError, rabin, 'noneexistentfile')
+        self.assertRaises(IOError, chunksizes_from_filename, 'noneexistentfile')
+
+    def test_fingerprint_from_string(self):
+        chunks = chunksizes_from_str(self.data)
+        self.assertEqual(self.reference, chunks)
+
+        # only a few chunks differ
+        chunks = chunksizes_from_str(self.data2)
+        self.assertEqual(self.reference2, chunks)
 
 
 if __name__ == '__main__':
